@@ -39,6 +39,31 @@ describe SendChargeReceiptJob do
       expect(CustomerMailer).to have_received(:receipt).with(purchase_two.id)
       expect(charge.reload.receipt_sent?).to be(true)
     end
+
+    it "preserves a sent receipt's marker when a later receipt fails" do
+      sent_purchase_ids = []
+      fail_second_receipt = true
+      allow(CustomerMailer).to receive(:receipt) do |purchase_id|
+        delivery = double
+        allow(delivery).to receive(:deliver_now) do
+          sent_purchase_ids << purchase_id
+          if purchase_id == purchase_two.id && fail_second_receipt
+            fail_second_receipt = false
+            raise "delivery failed"
+          end
+          create(:customer_email_info, purchase_id:, email_name: SendgridEventInfo::RECEIPT_MAILER_METHOD)
+        end
+        delivery
+      end
+
+      expect { described_class.new.perform(charge.id) }.to raise_error("delivery failed")
+      expect(CustomerEmailInfo.exists?(purchase_id: purchase_one.id, email_name: SendgridEventInfo::RECEIPT_MAILER_METHOD)).to be(true)
+
+      described_class.new.perform(charge.id)
+
+      expect(sent_purchase_ids).to eq([purchase_one.id, purchase_two.id, purchase_two.id])
+      expect(charge.reload.receipt_sent?).to be(true)
+    end
   end
 
   context "with a three-item charge" do
